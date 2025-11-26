@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import librosa
-from PySide6.QtCore import Qt, QObject, Signal, Slot, QThread, QSettings, QByteArray, QBuffer, QSize
+from PySide6.QtCore import Qt, QObject, Signal, Slot, QThread, QSettings, QByteArray, QBuffer, QSize, QTimer
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -37,7 +37,7 @@ from utils import midi as midi_utils
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Spectrogram Annotation")
+        self.setWindowTitle("SpecAnnotate")
         # Set a sensible default window size
         self.resize(1200, 800)
 
@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.widget)
 
         # Settings storage
-        self._settings = QSettings("bendavison", "SpectrogramAnnotation")
+        self._settings = QSettings("SpecAnnotate")
 
         self._audio_path: Path | None = None
         self._midi_path: Path | None = None
@@ -465,7 +465,7 @@ class MainWindow(QMainWindow):
             )
 
             # Update window title
-            self.setWindowTitle(f"Spectrogram Annotation — {audio_name} — {midi_name}")
+            self.setWindowTitle(f"SpecAnnotate — {audio_name} — {midi_name}")
 
             # Update toolbar labels if they exist
             if hasattr(self, "_lbl_audio_name") and self._lbl_audio_name is not None:
@@ -853,14 +853,22 @@ class MainWindow(QMainWindow):
     # Note preview playback -----------------------------------------------
     @Slot(int, int, int, int)
     def _on_note_created(self, pitch: int, start_frame: int, end_frame: int, velocity: int):
-        # Play a short sine tone at the note's frequency; cap duration to 600ms
+        # Preview the created note using the SynthEngine (short note-on/note-off)
         try:
-            freq = float(librosa.midi_to_hz(pitch))
+            # Skip if preview volume is effectively muted
+            if float(self._preview_volume) <= 0.0:
+                return
+            freq = float(librosa.midi_to_hz(int(pitch)))
+            secs_per_frame = self._hop_length / float(self._sample_rate or 22050)
+            dur = max(0.05, min(0.6, (end_frame - start_frame) * secs_per_frame))
+            # Map preview volume (0..1) to MIDI velocity 1..127
+            vel = max(1, min(127, int(round(float(self._preview_volume) * 127.0))))
+            vid = self._synth.note_on(freq, vel)
+            if vid is not None:
+                # Schedule note_off after the short preview duration
+                QTimer.singleShot(int(dur * 1000.0), lambda v=vid: self._synth.note_off(int(v)))
         except Exception:
-            return
-        secs_per_frame = self._hop_length / float(self._sample_rate or 22050)
-        dur = max(0.05, min(0.6, (end_frame - start_frame) * secs_per_frame))
-        self._play_tone(freq, dur)
+            pass
 
     def _play_tone(self, freq_hz: float, duration_sec: float, volume: float | None = None):
         try:
@@ -1185,6 +1193,12 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):  # type: ignore[override]
         try:
             self._save_settings()
+            try:
+                # Gracefully stop the synth engine's audio stream
+                if hasattr(self, "_synth") and self._synth is not None:
+                    self._synth.stop()
+            except Exception:
+                pass
         finally:
             super().closeEvent(event)
 

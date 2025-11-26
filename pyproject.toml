@@ -1,5 +1,5 @@
 [project]
-name = "spectrogram-annotation"
+name = "specannotate"
 version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.13"
@@ -13,4 +13,4 @@ dependencies = [
 ]
 
 [project.scripts]
-spectrogram-annotation = "app.main:main"
+specannotate = "app.main:main"

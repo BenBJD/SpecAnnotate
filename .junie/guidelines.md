@@ -1,4 +1,4 @@
-Spectrogram Annotation — Project Guidelines
+SpecAnnotate — Project Guidelines
 
 This document captures project-specific knowledge to help future development, testing, and debugging. It assumes an advanced developer familiar with Python packaging, Qt, and audio/DSP.
 
@@ -20,7 +20,7 @@ Build and Configuration
     - Note: pip mode won’t use `uv.lock`, so versions may drift.
 
 - Running the app (Qt GUI):
-  - Console entry point (declared in `pyproject.toml`): `spectrogram-annotation`
+  - Console entry point (declared in `pyproject.toml`): `specannotate`
   - Or module invocation: `python -m app.main` or `python main.py`
   - GUI stack: PySide6; the app requires a windowing environment (Wayland/X11 on Linux, Quartz on macOS, Win32 on Windows). Headless environments require a virtual display (e.g., Xvfb) if you need to instantiate `QApplication`.
 
@@ -58,5 +58,5 @@ Audio realtime considerations:
 Quick Commands Reference
 
 - Create environment (uv): `uv sync`
-- Run app: `spectrogram-annotation` or `python main.py`
+- Run app: `specannotate` or `python main.py`
 - Run demo test: `python .junie/tmp_demo_test.py`
