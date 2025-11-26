@@ -9,6 +9,7 @@ dependencies = [
     "pretty-midi>=0.2.11",
     "pyside6>=6.10.1",
     "matplotlib>=3.7",
+    "sounddevice>=0.5.3",
 ]
 
 [project.scripts]

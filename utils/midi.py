@@ -19,6 +19,7 @@ def export_notes_to_midi(
     tempo_bpm: int = 120,
     ppq: int = 480,
     channel: int = 0,
+    duration_sec: float = None,
 ) -> None:
     """
     Export a collection of notes to a single-track MIDI file.
@@ -29,6 +30,7 @@ def export_notes_to_midi(
     - tempo_bpm: tempo used to convert seconds to ticks
     - ppq: pulses per quarter note (MIDI ticks per beat)
     - channel: MIDI channel for note events
+    - duration_sec: optional track length in seconds; if provided, ensures MIDI file matches this duration
     """
 
     # Normalize to a list of tuples
@@ -71,10 +73,7 @@ def export_notes_to_midi(
         last_time_sec = abs_sec
 
     # Compute track length from the furthest note end time and place end_of_track there
-    track_length_sec = 0.0
-    if norm:
-        # norm elements are (pitch, start, end, vel)
-        track_length_sec = max(e for (_, _, e, _) in norm)
+    track_length_sec = duration_sec
     # If there were no notes, length stays 0.0
     if track_length_sec < last_time_sec:
         # Shouldn't happen, but guard: ensure EOT is not before last event

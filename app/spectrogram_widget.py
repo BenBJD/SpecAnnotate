@@ -29,6 +29,12 @@ class SpectrogramWidget(QGraphicsView):
     note_created = Signal(int, int, int, int)
     # Emitted when the playback marker/playhead is moved by the user (seconds)
     marker_moved_seconds = Signal(float)
+    # Live pitch preview while dragging/moving notes
+    # Emitted with snapped MIDI pitch
+    pitch_preview_started = Signal(int)
+    pitch_preview_updated = Signal(int)
+    pitch_preview_ended = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setRenderHints(self.renderHints())
@@ -80,6 +86,10 @@ class SpectrogramWidget(QGraphicsView):
         self._dragging_note_index: int | None = None
         self._dragging_note_grab_frame_offset: int = 0
         self._dragging_note_length: int = 0
+
+        # Pitch preview state
+        self._preview_active: bool = False
+        self._preview_last_pitch: int | None = None
 
     # Public API
     def set_spectrogram(self, cqt: np.ndarray, *, sample_rate: int, hop_length: int, f_min_midi: int, bins_per_octave: int):
@@ -137,7 +147,6 @@ class SpectrogramWidget(QGraphicsView):
             return
         secs_per_frame = self._hop_length / float(self._sample_rate)
         for pitch, start_s, end_s, vel in notes:
-            print(f"Processing note: pitch={pitch}, start={start_s:.2f}s, end={end_s:.2f}s, velocity={vel}")
             # Convert seconds to frame indices
             start_frame = int(np.floor(max(0.0, start_s) / secs_per_frame))
             end_frame = int(np.ceil(max(start_s, end_s) / secs_per_frame))
@@ -408,6 +417,13 @@ class SpectrogramWidget(QGraphicsView):
                 note = self._notes[idx]
                 self._dragging_note_length = max(1, int(note.end_frame - note.start_frame))
                 self._dragging_note_grab_frame_offset = max(0, int(start_frame - note.start_frame))
+                # Start pitch preview for existing note drag
+                try:
+                    self.pitch_preview_started.emit(int(pitch))
+                except Exception:
+                    pass
+                self._preview_active = True
+                self._preview_last_pitch = int(pitch)
                 return
             self._drag_start_scene = scene_pos
             start_frame, pitch = self._scene_pos_to_frame_pitch(scene_pos)
@@ -417,6 +433,13 @@ class SpectrogramWidget(QGraphicsView):
             self._rubberband_item.setBrush(QColor(0, 255, 0, 80))
             self._rubberband_item.setPen(QColor(0, 200, 0, 180))
             self._scene.addItem(self._rubberband_item)
+            # Start pitch preview for new note drawing (pitch fixed at initial click)
+            try:
+                self.pitch_preview_started.emit(int(pitch))
+            except Exception:
+                pass
+            self._preview_active = True
+            self._preview_last_pitch = int(pitch)
         elif event.button() == Qt.MiddleButton or event.button() == Qt.RightButton:
             # Start dragging the playhead if near it; otherwise jump playhead to click and start drag
             scene_pos = self.mapToScene(event.position().toPoint())
@@ -457,6 +480,7 @@ class SpectrogramWidget(QGraphicsView):
                 end_frame = start_frame + 1
             rect = self._frame_pitch_to_rect(start_frame, end_frame, pitch)
             self._rubberband_item.setRect(rect)
+            # While drawing a new note, the pitch is fixed from the start point; nothing to update.
         elif self._dragging_note_item is not None and self._dragging_note_index is not None:
             # Move existing note with the cursor, snapping to frame/pitch grid
             current_scene = self.mapToScene(event.position().toPoint())
@@ -466,13 +490,21 @@ class SpectrogramWidget(QGraphicsView):
             start_frame = max(0, min(start_frame, max(0, self._n_frames - self._dragging_note_length)))
             end_frame = int(start_frame + self._dragging_note_length)
             pitch = int(pitch_at_cursor)
-            # Clamp pitch into valid range
+            # Clamp pitch into valid MIDI range covered by the CQT
             if self._cqt is not None:
                 min_pitch = int(self._f_min_midi)
-                max_pitch = int(self._f_min_midi + self._n_bins - 1)
-                pitch = max(min_pitch, min(max_pitch, pitch))
+                # Total MIDI span represented by n_bins at bins_per_octave
+                midi_max = int(np.floor(self._f_min_midi + (self._n_bins * 12.0 / float(max(1, self._bins_per_octave)))))
+                pitch = int(np.clip(pitch, min_pitch, midi_max))
             rect = self._frame_pitch_to_rect(start_frame, end_frame, pitch)
             self._dragging_note_item.setRect(rect)
+            # Emit pitch preview update if pitch changed
+            if self._preview_active and (self._preview_last_pitch is None or int(pitch) != int(self._preview_last_pitch)):
+                try:
+                    self.pitch_preview_updated.emit(int(pitch))
+                except Exception:
+                    pass
+                self._preview_last_pitch = int(pitch)
         elif self._dragging_playhead:
             current_scene = self.mapToScene(event.position().toPoint())
             self._set_playhead_by_scene_pos(current_scene)
@@ -497,6 +529,14 @@ class SpectrogramWidget(QGraphicsView):
                 pass
             self._rubberband_item = None
             self._drag_start_scene = None
+            # End pitch preview for drawing
+            if self._preview_active:
+                try:
+                    self.pitch_preview_ended.emit()
+                except Exception:
+                    pass
+                self._preview_active = False
+                self._preview_last_pitch = None
         elif event.button() == Qt.LeftButton and self._dragging_note_item is not None and self._dragging_note_index is not None:
             # Commit dragged note position into data
             item = self._dragging_note_item
@@ -508,11 +548,13 @@ class SpectrogramWidget(QGraphicsView):
             end_frame = int(round(max(0.0, (r.right() - self._left_gutter) / float(self._x_scale))))
             if end_frame <= start_frame:
                 end_frame = start_frame + 1
-            # Vertical mapping: map y to bin, then to midi
+            # Vertical mapping: derive MIDI pitch from rectangle center using the same
+            # scene->(frame,pitch) mapping used during interaction, which correctly
+            # handles the vertical flip and semitone snapping.
             if self._cqt is not None and self._n_bins > 0:
-                bin_index = int(round(r.top() / float(self._y_scale)))
-                bin_index = max(0, min(self._n_bins - 1, bin_index))
-                pitch = int(self._midi_at_bin(bin_index))
+                center_pos = QPointF(r.center().x(), r.center().y())
+                _frame_dummy, center_pitch = self._scene_pos_to_frame_pitch(center_pos)
+                pitch = int(center_pitch)
             else:
                 pitch = self._notes[idx].pitch
             # Update model
@@ -522,6 +564,14 @@ class SpectrogramWidget(QGraphicsView):
             self._dragging_note_index = None
             self._dragging_note_grab_frame_offset = 0
             self._dragging_note_length = 0
+            # End pitch preview for existing note drag
+            if self._preview_active:
+                try:
+                    self.pitch_preview_ended.emit()
+                except Exception:
+                    pass
+                self._preview_active = False
+                self._preview_last_pitch = None
         elif self._dragging_playhead and (event.button() in (Qt.MiddleButton, Qt.RightButton)):
             self._dragging_playhead = False
         else:
