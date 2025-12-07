@@ -11,6 +11,9 @@ import librosa
 
 
 class CQTSettingsDialog(QDialog):
+    """
+    Dialog for setting CQT parameters.
+    """
     def __init__(
         self,
         *,

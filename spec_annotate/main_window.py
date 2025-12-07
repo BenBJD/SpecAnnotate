@@ -33,6 +33,9 @@ from spec_annotate.cqt_settings_dialog import CQTSettingsDialog
 from spec_annotate.utils.cqt import generate_spectrogram
 from spec_annotate.utils import midi as midi_utils
 
+"""
+TODO: This file is really long. Break it up
+"""
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -50,11 +53,11 @@ class MainWindow(QMainWindow):
         self._audio_path: Path | None = None
         self._midi_path: Path | None = None
         self._sample_rate: int | None = None
-        # CQT parameters (editable)
+
+        # Default CQT settings
         self._hop_length: int = 128
         self._n_bins: int = 240
         self._bins_per_octave: int = 36
-        # Use a musical note for f_min, derive MIDI for labeling
         self._f_min_note: str = "C2"
         self._f_min_midi: int = int(librosa.note_to_midi(self._f_min_note))
         self._power_scaling: float | None = 2
@@ -137,7 +140,6 @@ class MainWindow(QMainWindow):
         self._load_settings()
         # Defer auto-loading until the window is shown so the progress dialog is visible
         self._startup_attempted = False
-
 
     def _build_toolbar(self):
         tb = QToolBar("Controls", self)
@@ -600,6 +602,15 @@ class MainWindow(QMainWindow):
         )
         if dlg.exec():
             vals = dlg.values()
+            # If there are existing drawn notes, snapshot them in seconds so we can
+            # restore after CQT is recomputed with the new hop length/params.
+            try:
+                if getattr(self, "widget", None) is not None and self.widget.has_notes():
+                    self._pending_notes_seconds = list(self.widget.export_notes_seconds())
+                else:
+                    self._pending_notes_seconds = None
+            except Exception:
+                self._pending_notes_seconds = None
             self._hop_length = vals["hop_length"]
             self._n_bins = vals["n_bins"]
             self._bins_per_octave = vals["bins_per_octave"]
@@ -705,6 +716,19 @@ class MainWindow(QMainWindow):
             f_min_midi=self._f_min_midi,
             bins_per_octave=self._bins_per_octave,
         )
+        # If we have a pending note snapshot (in seconds) due to a settings change,
+        # restore it now so note alignment remains correct under new hop length.
+        try:
+            pending = getattr(self, "_pending_notes_seconds", None)
+            if pending:
+                self.widget.set_notes_seconds(list(pending))
+        except Exception:
+            pass
+        finally:
+            try:
+                self._pending_notes_seconds = None
+            except Exception:
+                pass
         # Fit the spectrogram to the current window on initial load for a good first view
         self.widget.fit_to_window()
         # Ensure saved x-scale is applied after first image build (handled in _load_settings too)

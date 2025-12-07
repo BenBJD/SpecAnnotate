@@ -23,6 +23,9 @@ class DrawnNote:
 
 
 class SpectrogramWidget(QGraphicsView):
+    """
+    This is the widget that displays the spectrogram and allows interactive drawing of notes.
+    """
     # Emitted whenever horizontal pixel-per-frame scale changes (float pixels/frame)
     x_scale_changed = Signal(float)
     # Emitted when a note is finalized by drawing: (pitch, start_frame, end_frame, velocity)

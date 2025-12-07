@@ -14,7 +14,7 @@ def generate_spectrogram(
     Generate a normalized CQT spectrogram in the range [0, 1].
 
     Parameters
-    - waveform: array-like. 1D mono or multi-channel time series. Supports numpy arrays or lists.
+    - waveform: Array like but will be converted to numpy float32 anyway. 1D mono or multi-channel time series.
     - hop_length: hop length for CQT in samples.
     - sample_rate: sampling rate of the audio.
     - n_bins: total number of CQT bins (rows). If f_min corresponds to MIDI 0 and bins_per_octave=12,
@@ -24,10 +24,10 @@ def generate_spectrogram(
     - power_scaling: optional gamma to apply as cqt ** gamma for display contrast.
 
     Returns
-    - 2D numpy array of shape (n_bins, n_frames), normalized to [0, 1].
+    - 2D numpy array of shape (n_bins, n_frames), normalised to [0, 1].
     """
 
-    # Ensure numpy float32 array, convert to mono if needed
+    # Ensure numpy float32 array and convert to mono if needed
     x = np.asarray(waveform, dtype=np.float32)
     if x.ndim == 2:
         # assume shape (channels, samples) or (samples, channels)
@@ -42,6 +42,7 @@ def generate_spectrogram(
     else:
         raise ValueError("waveform must be 1D or 2D array-like")
 
+    # Currently using hybrid CQT but maybe add options in future?
     cqt = librosa.hybrid_cqt(
         mono,
         hop_length=hop_length,

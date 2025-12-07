@@ -21,7 +21,7 @@ class SynthEngine(QObject):
         # Remember to call synth.stop() when done
     """
 
-    def __init__(self, parent=None, sample_rate: int = 44100,
+    def __init__(self, parent=None, sample_rate: int = 48000,
         max_voices: int = 32):
         super().__init__(parent)
 
@@ -29,11 +29,12 @@ class SynthEngine(QObject):
         self.sample_rate = int(sample_rate)
         self.max_voices = int(max_voices)
         self.channels = 1
-        self.dtype = np.int16  # Output data type for sounddevice stream
+        # Use float32 for lower conversion overhead in the RT callback
+        self.dtype = 'float32'
 
         # Critical for low latency: A small blocksize (e.g., 128 to 512 frames)
-        # 256 frames at 44.1kHz is ~5.8ms latency, 512 is ~11.6ms
-        self.blocksize = 512
+        # 256 frames at 48kHz is ~5.3ms, 128 is ~2.7ms
+        self.blocksize = 256
 
         # Voice state
         self._next_voice_id = 1
@@ -44,6 +45,11 @@ class SynthEngine(QObject):
         self.attack_sec = 0.01
         self.release_sec = 0.03
 
+        # Preallocated buffers to reduce per-callback allocations
+        self._idx = np.arange(self.blocksize, dtype=np.float32)
+        self._mix = np.zeros(self.blocksize, dtype=np.float32)
+        self._last_status_ts = 0.0  # throttle status logging from RT thread
+
         # SoundDevice Stream Setup (non-blocking, callback-based)
         # The callback function self._render_chunk will be called whenever the
         # audio buffer needs data, providing the lowest possible latency.
@@ -52,6 +58,7 @@ class SynthEngine(QObject):
             channels=self.channels,
             dtype=self.dtype,
             blocksize=self.blocksize,
+            latency='low',
             callback=self._render_chunk,
             finished_callback=self._stream_finished
         )
@@ -133,13 +140,21 @@ class SynthEngine(QObject):
         """
         try:
             if status:
-                # Log any potential buffer underruns or other warnings
-                print(f"Audio stream status warning: {status}")
+                # Throttle logging of output underflow to avoid RT thread spam
+                import time as _t
+                s = str(status)
+                if 'OutputUnderflow' in s or 'output underflow' in s:
+                    if _t.time() - self._last_status_ts > 1.0:
+                        print(f"Audio underflow: {status}")
+                        self._last_status_ts = _t.time()
 
             n_frames = frames
 
             # Internal audio generation buffer (float32, full scale -1.0 to 1.0)
-            out = np.zeros(n_frames, dtype=np.float32)
+            # Reuse preallocated arrays when possible
+            idx = self._idx[:n_frames] if n_frames <= self._idx.shape[0] else np.arange(n_frames, dtype=np.float32)
+            out = self._mix[:n_frames] if n_frames <= self._mix.shape[0] else np.zeros(n_frames, dtype=np.float32)
+            out.fill(0.0)
             two_pi_over_sr = 2.0 * np.pi / float(self.sample_rate)
 
             dead_voices = []
@@ -172,9 +187,9 @@ class SynthEngine(QObject):
                 # sustain: env_inc remains 0.0
 
                 # --- Vectorized Sine Wave Generation ---
-                # 1. Create a phase vector for the whole chunk
-                # np.arange(n_frames) gives [0, 1, 2, ..., n_frames-1]
-                phase_vector = phase + w * np.arange(n_frames)
+                # 1. Create a phase vector for the whole chunk using preallocated index vector
+                # idx gives [0, 1, 2, ..., n_frames-1]
+                phase_vector = phase + w * idx
 
                 # 2. Generate the sine wave
                 sine_wave = np.sin(phase_vector)
@@ -248,15 +263,10 @@ class SynthEngine(QObject):
             for vid in dead_voices:
                 self._voices.pop(vid, None)
 
-            # Mixdown, clip to float range [-1.0, 1.0]
+            # Mixdown, clip to float range [-1.0, 1.0] and write float32 directly
             pcm_float = np.clip(out, -1.0, 1.0)
-
-            # Convert to target dtype (np.int16) and fill outdata
-            # Max value for 16-bit PCM is 32767
-            pcm_i16 = (pcm_float * 32767.0).astype(self.dtype)
-
             # SoundDevice expects a 2D array (N, channels) for mono it's (N, 1)
-            outdata[:] = pcm_i16.reshape(-1, self.channels)
+            outdata[:] = pcm_float.reshape(-1, self.channels)
 
         except Exception as e:
             # Crucial: print errors but ensure the callback finishes quickly
